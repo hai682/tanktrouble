@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>坦克动荡：重制版</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrapper">
+    <!-- 画布 -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- 主菜单 -->
+    <div id="menu" class="panel panel-menu">
+      <div class="menu-inner">
+        <h1 class="title">坦克动荡：重制版</h1>
+
+        <div class="menu-row">
+          <label for="difficultySelect">难度：</label>
+          <select id="difficultySelect">
+            <option value="easy">简单</option>
+            <option value="normal">普通</option>
+            <option value="hard" selected>困难</option>
+          </select>
+        </div>
+
+        <div class="menu-row">
+          <label for="modeSelect">模式：</label>
+          <select id="modeSelect">
+            <option value="score">计分制（先到 7 分）</option>
+            <option value="time">计时制（5 分钟最高分）</option>
+          </select>
+        </div>
+
+        <div class="menu-row menu-buttons">
+          <button id="startBtn" class="btn primary">开始游戏</button>
+          <button id="muteBtn" class="btn ghost">🔊 声音：开</button>
+        </div>
+
+        <p class="hint">
+          WASD 移动，空格开火，支持斜向移动 · P 键快速暂停/继续
+        </p>
+      </div>
+    </div>
+
+    <!-- HUD（对战界面顶部信息 + 底部按钮） -->
+    <div id="hud" class="panel panel-hud hidden">
+      <div class="hud-top">
+        <div class="hud-left">
+          <div>玩家：<span id="playerScore">0</span></div>
+          <div>电脑：<span id="aiScore">0</span></div>
+        </div>
+        <div class="hud-center">
+          <div id="timer" class="timer">05:00</div>
+        </div>
+        <div class="hud-right">
+          <div id="modeLabel">模式：</div>
+          <div id="difficultyLabel">难度：</div>
+        </div>
+      </div>
+
+      <div class="hud-bottom">
+        <div class="hud-bottom-left">
+          WASD 移动 · 空格 开火 · P 暂停
+        </div>
+        <div class="hud-bottom-right">
+          <button id="pauseBtn" class="btn small">暂停</button>
+          <button id="resumeBtn" class="btn small hidden">继续</button>
+          <button id="restartBtn" class="btn small ghost">重新开始</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 结束界面 -->
+    <div id="game-over" class="panel panel-overlay hidden">
+      <div class="overlay-inner">
+        <h2 id="resultText">你赢了！</h2>
+        <p id="finalScoreText">玩家 7 : 3 电脑</p>
+        <p id="timeInfo"></p>
+        <div class="overlay-buttons">
+          <button id="playAgainBtn" class="btn primary">再来一局</button>
+          <button id="backToMenuBtn" class="btn ghost">返回主界面</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
