@@ -39,7 +39,7 @@
         </div>
 
         <p class="hint">
-          WASD 移动，空格开火，支持斜向移动 · P 键快速暂停/继续
+          玩家1：WASD 移动，空格射击 · 玩家2：方向键移动，M 键射击 · Esc 暂停
         </p>
       </div>
     </div>
@@ -48,8 +48,8 @@
     <div id="hud" class="panel panel-hud hidden">
       <div class="hud-top">
         <div class="hud-left">
-          <div>玩家：<span id="playerScore">0</span></div>
-          <div>电脑：<span id="aiScore">0</span></div>
+          <div><span id="player1Label">玩家1</span>：<span id="playerScore">0</span></div>
+          <div><span id="player2Label">玩家2</span>：<span id="aiScore">0</span></div>
         </div>
         <div class="hud-center">
           <div id="timer" class="timer">05:00</div>
@@ -62,7 +62,7 @@
 
       <div class="hud-bottom">
         <div class="hud-bottom-left">
-          WASD 移动 · 空格 开火 · P 暂停
+          玩家1：WASD+空格 · 玩家2：方向键+M · Esc 暂停
         </div>
         <div class="hud-bottom-right">
           <button id="pauseBtn" class="btn small">暂停</button>
@@ -81,6 +81,18 @@
         <div class="overlay-buttons">
           <button id="playAgainBtn" class="btn primary">再来一局</button>
           <button id="backToMenuBtn" class="btn ghost">返回主界面</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 暂停界面 -->
+    <div id="pauseOverlay" class="panel panel-overlay hidden">
+      <div class="overlay-inner">
+        <h2>游戏已暂停</h2>
+        <p>Esc 或下方按钮可继续 · 可随时返回主界面</p>
+        <div class="overlay-buttons">
+          <button id="pauseResumeBtn" class="btn primary">继续游戏</button>
+          <button id="pauseMenuBtn" class="btn ghost">返回主界面</button>
         </div>
       </div>
     </div>

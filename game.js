@@ -94,6 +94,8 @@ tankRadius: 18,
   const startBtn = document.getElementById("startBtn");
   const muteBtn = document.getElementById("muteBtn");
 
+  const player1LabelEl = document.getElementById("player1Label");
+  const player2LabelEl = document.getElementById("player2Label");
   const playerScoreEl = document.getElementById("playerScore");
   const aiScoreEl = document.getElementById("aiScore");
   const timerEl = document.getElementById("timer");
@@ -103,6 +105,9 @@ tankRadius: 18,
   const pauseBtn = document.getElementById("pauseBtn");
   const resumeBtn = document.getElementById("resumeBtn");
   const restartBtn = document.getElementById("restartBtn");
+  const pauseOverlay = document.getElementById("pauseOverlay");
+  const pauseResumeBtn = document.getElementById("pauseResumeBtn");
+  const pauseMenuBtn = document.getElementById("pauseMenuBtn");
 
   const resultTextEl = document.getElementById("resultText");
   const finalScoreTextEl = document.getElementById("finalScoreText");
@@ -115,75 +120,75 @@ tankRadius: 18,
 
   // ===== 输入状态 =====
   const input = {
-    up: false,
-    down: false,
-    left: false,
-    right: false,
-    fire: false,
+    // 双人按键状态拆成两个对象，避免互相覆盖
+    player1: { up: false, down: false, left: false, right: false, fire: false },
+    player2: { up: false, down: false, left: false, right: false, fire: false },
   };
 
-  window.addEventListener("keydown", (e) => {
+  function handleKeyChange(e, isDown) {
     switch (e.code) {
+      // 玩家1：WASD + 空格
       case "KeyW":
-      case "ArrowUp":
-        input.up = true;
+        input.player1.up = isDown;
         e.preventDefault();
         break;
       case "KeyS":
-      case "ArrowDown":
-        input.down = true;
+        input.player1.down = isDown;
         e.preventDefault();
         break;
       case "KeyA":
-      case "ArrowLeft":
-        input.left = true;
+        input.player1.left = isDown;
         e.preventDefault();
         break;
       case "KeyD":
-      case "ArrowRight":
-        input.right = true;
+        input.player1.right = isDown;
         e.preventDefault();
         break;
       case "Space":
-        input.fire = true;
+        input.player1.fire = isDown;
         e.preventDefault();
         break;
-      case "KeyP":
-        togglePause();
+
+      // 玩家2：方向键 + M
+      case "ArrowUp":
+        input.player2.up = isDown;
         e.preventDefault();
+        break;
+      case "ArrowDown":
+        input.player2.down = isDown;
+        e.preventDefault();
+        break;
+      case "ArrowLeft":
+        input.player2.left = isDown;
+        e.preventDefault();
+        break;
+      case "ArrowRight":
+        input.player2.right = isDown;
+        e.preventDefault();
+        break;
+      case "KeyM":
+        input.player2.fire = isDown;
+        e.preventDefault();
+        break;
+
+      case "KeyP":
+        if (isDown && gameState === "playing") {
+          togglePause();
+          e.preventDefault();
+        }
         break;
       case "Escape":
-        if (gameState === "playing") {
-          pauseGame();
+        if (isDown && gameState === "playing") {
+          // Esc 作为暂停/继续开关
+          togglePause();
           e.preventDefault();
         }
         break;
     }
-  });
+  }
 
-  window.addEventListener("keyup", (e) => {
-    switch (e.code) {
-      case "KeyW":
-      case "ArrowUp":
-        input.up = false;
-        break;
-      case "KeyS":
-      case "ArrowDown":
-        input.down = false;
-        break;
-      case "KeyA":
-      case "ArrowLeft":
-        input.left = false;
-        break;
-      case "KeyD":
-      case "ArrowRight":
-        input.right = false;
-        break;
-      case "Space":
-        input.fire = false;
-        break;
-    }
-  });
+  window.addEventListener("keydown", (e) => handleKeyChange(e, true));
+  window.addEventListener("keyup", (e) => handleKeyChange(e, false));
 
   // ===== 工具函数 =====
   function clamp(v, min, max) {
@@ -332,14 +337,16 @@ function getTankForwardVector(tank) {
   updateMuteButton();
 
   // ===== 游戏状态 =====
-  let gameState = "menu"; // menu / playing / paused / gameOver
+  let gameState = "menu"; // menu / playing / gameOver
+  let isPaused = false; // 是否处于暂停界面
   let currentMode = GameMode.SCORE;
   let currentDifficulty = "hard";
+  let gameMode = "pvp"; // "pvp" 玩家对战（默认） / "pve" 玩家 vs AI
 
   let obstacles = [];
   let bullets = [];
   let playerTank = null;
-  let aiTank = null;
+  let aiTank = null; // 在 PVP 模式下也沿用 aiTank 变量承载玩家2
   let maze = null;
   let playerSpawnPoint = null;
   let aiSpawnPoint = null;
@@ -1019,56 +1026,45 @@ function getTankForwardVector(tank) {
     }
   }
 
-  // ===== 玩家更新 =====
-  function updatePlayer(dt) {
-    if (!playerTank || !playerTank.isAlive) return;
+  // ===== 人类玩家（含玩家2）更新 =====
+  function updateHumanTank(tank, controlState, ownerKey, dt) {
+    if (!tank || !tank.isAlive) return;
 
-    // 1）按键转换为“前进/后退 + 旋转”指令
+    // 1）把键位状态翻译成“前进/后退 + 左右转”命令
     let moveDir = 0; // +1 前进，-1 后退
-    if (input.up) moveDir += 1;
-    if (input.down) moveDir -= 1;
+    if (controlState.up) moveDir += 1;
+    if (controlState.down) moveDir -= 1;
 
     let rotateDir = 0; // +1 顺时针（右转），-1 逆时针（左转）
-    if (input.right) rotateDir += 1;
-    if (input.left) rotateDir -= 1;
+    if (controlState.right) rotateDir += 1;
+    if (controlState.left) rotateDir -= 1;
 
-    // 2）更新坦克朝向角度（先记下旧角度，方便撤销）
-    const oldAngle = playerTank.angle;
-
-    // angle 定义：0 为水平向右，顺时针为正角度。
-    playerTank.angle += rotateDir * TANK_ROTATE_SPEED * dt;
-
-    // 把 angle 归一到 [-π, π] 范围，避免无限增大导致精度问题
-    if (playerTank.angle > Math.PI) playerTank.angle -= Math.PI * 2;
-    if (playerTank.angle < -Math.PI) playerTank.angle += Math.PI * 2;
-
-    // ★ 旋转后的炮管如果戳进墙里，就撤回这次旋转，保持上一帧的角度
-    if (isTankCollidingWithObstacles(playerTank)) {
-      playerTank.angle = oldAngle;
+    // 2）更新坦克朝向，依旧检查“炮管顶墙”后撤回
+    const oldAngle = tank.angle;
+    tank.angle += rotateDir * TANK_ROTATE_SPEED * dt;
+    if (tank.angle > Math.PI) tank.angle -= Math.PI * 2;
+    if (tank.angle < -Math.PI) tank.angle += Math.PI * 2;
+    if (isTankCollidingWithObstacles(tank)) {
+      tank.angle = oldAngle;
     }
 
-    // 3）根据当前朝向和“前进/后退指令”计算速度向量
-    const forward = getTankForwardVector(playerTank);
+    // 3）按当前朝向和 moveDir 计算速度
+    const forward = getTankForwardVector(tank);
     const moveSpeed = CONFIG.tankSpeedByDifficulty[currentDifficulty];
     const vx = forward.x * moveSpeed * moveDir;
     const vy = forward.y * moveSpeed * moveDir;
+    tank.vx = vx;
+    tank.vy = vy;
+    moveTankWithCollisions(tank, vx * dt, vy * dt);
 
-    playerTank.vx = vx;
-    playerTank.vy = vy;
-
-    // 平移时同样会走“车体 + 炮管”的碰撞
-    moveTankWithCollisions(playerTank, vx * dt, vy * dt);
-
-    // 4）射击冷却
-    if (playerTank.shootCooldown > 0) {
-      playerTank.shootCooldown -= dt;
+    // 4）射击：各玩家共用冷却和上限
+    if (tank.shootCooldown > 0) {
+      tank.shootCooldown -= dt;
     }
-
-    // 5）按当前朝向，从炮口位置发射子弹
-    if (input.fire && playerTank.shootCooldown <= 0) {
-      if (countBulletsForOwner("player") < CONFIG.maxBulletsPerTank) {
-        spawnBulletFromTank(playerTank);
-        playerTank.shootCooldown = CONFIG.playerShootInterval;
+    if (controlState.fire && tank.shootCooldown <= 0) {
+      if (countBulletsForOwner(ownerKey) < CONFIG.maxBulletsPerTank) {
+        spawnBulletFromTank(tank);
+        tank.shootCooldown = CONFIG.playerShootInterval;
       }
     }
   }
@@ -1479,6 +1475,11 @@ function getTankForwardVector(tank) {
     playerScoreEl.textContent = `${playerScore}`;
     aiScoreEl.textContent = `${aiScore}`;
 
+    const playerName = gameMode === "pvp" ? "玩家1" : "玩家";
+    const opponentName = gameMode === "pvp" ? "玩家2" : "电脑";
+    player1LabelEl.textContent = playerName;
+    player2LabelEl.textContent = opponentName;
+
     if (currentMode === GameMode.TIME) {
       timerEl.style.visibility = "visible";
       timerEl.textContent = formatTime(remainingTime);
@@ -1500,11 +1501,17 @@ function getTankForwardVector(tank) {
   function endGame(message) {
     if (gameState === "gameOver") return;
     gameState = "gameOver";
+    isPaused = false;
+    pauseOverlay.classList.add("hidden");
+    pauseBtn.classList.add("hidden");
+    resumeBtn.classList.add("hidden");
     hudEl.classList.add("hidden");
     overlayEl.classList.remove("hidden");
 
     resultTextEl.textContent = message;
-    finalScoreTextEl.textContent = `玩家 ${playerScore} : ${aiScore} 电脑`;
+    const playerName = gameMode === "pvp" ? "玩家1" : "玩家";
+    const opponentName = gameMode === "pvp" ? "玩家2" : "电脑";
+    finalScoreTextEl.textContent = `${playerName} ${playerScore} : ${aiScore} ${opponentName}`;
 
     if (currentMode === GameMode.TIME) {
       const used = CONFIG.timeLimit - remainingTime;
@@ -1526,9 +1533,9 @@ function getTankForwardVector(tank) {
 
   function triggerTimeModeEnd() {
     if (playerScore > aiScore) {
-      endGame("时间到！你赢了");
+      endGame(gameMode === "pvp" ? "时间到！玩家1 获胜" : "时间到！你赢了");
     } else if (aiScore > playerScore) {
-      endGame("时间到！电脑获胜");
+      endGame(gameMode === "pvp" ? "时间到！玩家2 获胜" : "时间到！电脑获胜");
     } else {
       endGame("时间到！平局");
     }
@@ -1619,11 +1626,11 @@ function getTankForwardVector(tank) {
     // 计分制：有人分数到达目标值则结束整场游戏
     if (currentMode === GameMode.SCORE) {
       if (playerScore >= CONFIG.scoreTarget) {
-        endGame("你赢了！");
+        endGame(gameMode === "pvp" ? "玩家1 获胜！" : "你赢了！");
         return;
       }
       if (aiScore >= CONFIG.scoreTarget) {
-        endGame("电脑获胜……");
+        endGame(gameMode === "pvp" ? "玩家2 获胜！" : "电脑获胜……");
         return;
       }
     }
@@ -1682,6 +1689,8 @@ function getTankForwardVector(tank) {
     overlayEl.classList.add("hidden");
     hudEl.classList.remove("hidden");
 
+    isPaused = false;
+    pauseOverlay.classList.add("hidden");
     resetMatch();
     gameState = "playing";
     pauseBtn.classList.remove("hidden");
@@ -1700,6 +1709,14 @@ function getTankForwardVector(tank) {
     resumeGame();
   });
 
+  pauseResumeBtn.addEventListener("click", () => {
+    resumeGame();
+  });
+
+  pauseMenuBtn.addEventListener("click", () => {
+    backToMenu();
+  });
+
   restartBtn.addEventListener("click", () => {
     restartGame();
   });
@@ -1712,29 +1729,34 @@ function getTankForwardVector(tank) {
     backToMenu();
   });
 
+  // ===== 暂停菜单控制 =====
   function pauseGame() {
-    if (gameState !== "playing") return;
-    gameState = "paused";
+    if (gameState !== "playing" || isPaused) return;
+    isPaused = true;
     pauseBtn.classList.add("hidden");
     resumeBtn.classList.remove("hidden");
+    pauseOverlay.classList.remove("hidden");
   }
 
   function resumeGame() {
-    if (gameState !== "paused") return;
-    gameState = "playing";
+    if (!isPaused) return;
+    isPaused = false;
     pauseBtn.classList.remove("hidden");
     resumeBtn.classList.add("hidden");
+    pauseOverlay.classList.add("hidden");
     lastTimestamp = performance.now();
   }
 
   function togglePause() {
-    if (gameState === "playing") pauseGame();
-    else if (gameState === "paused") resumeGame();
+    if (isPaused) resumeGame();
+    else pauseGame();
   }
 
   function restartGame() {
     overlayEl.classList.add("hidden");
     hudEl.classList.remove("hidden");
+    isPaused = false;
+    pauseOverlay.classList.add("hidden");
     resetMatch();
     gameState = "playing";
     pauseBtn.classList.remove("hidden");
@@ -1742,10 +1764,25 @@ function getTankForwardVector(tank) {
   }
 
   function backToMenu() {
+    // 返回主界面时确保退出暂停并把对局清空
+    isPaused = false;
+    pauseOverlay.classList.add("hidden");
+    pauseBtn.classList.remove("hidden");
+    resumeBtn.classList.add("hidden");
     gameState = "menu";
     overlayEl.classList.add("hidden");
     hudEl.classList.add("hidden");
     menuEl.classList.remove("hidden");
+    bullets = [];
+    playerScore = 0;
+    aiScore = 0;
+    remainingTime = CONFIG.timeLimit;
+    playerTank = null;
+    aiTank = null;
+    isRoundActive = false;
+    pendingRoundResult = null;
+    roundJudgeTimer = 0;
+    updateHUD();
   }
 
   // ===== 渲染 =====
@@ -1834,15 +1871,17 @@ function getTankForwardVector(tank) {
   }
 
   function drawHints() {
-    if (gameState === "playing" || gameState === "paused") {
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
+    if (gameState === "playing") {
+      ctx.fillStyle = "rgba(255,255,255,0.78)";
       ctx.font = "16px monospace";
       ctx.textAlign = "left";
       ctx.textBaseline = "bottom";
-      ctx.fillText("WASD 移动 · 空格 开火 · P 暂停", 16, canvas.height - 14);
+      ctx.fillText("玩家1：WASD 移动，空格射击", 16, canvas.height - 36);
+      ctx.fillText("玩家2：方向键移动，M 键射击 · Esc 暂停", 16, canvas.height - 16);
     }
 
-    if (gameState === "paused") {
+    if (isPaused && gameState === "playing") {
+      // 画一层透明遮罩提醒处于暂停状态
       ctx.fillStyle = "rgba(0,0,0,0.45)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#ffffff";
@@ -1876,8 +1915,8 @@ function getTankForwardVector(tank) {
     lastTimestamp = timestamp;
     const dt = Math.min(rawDt, 0.05); // 防止 tab 切回来时间步太大
 
-        if (gameState === "playing") {
-      // 计时制：这里负责扣整体时间 & 时间到触发整场结束
+    if (gameState === "playing" && !isPaused) {
+      // 计时制：暂停时也需要静止，这里只在未暂停时扣时间
       if (currentMode === GameMode.TIME) {
         remainingTime -= dt;
         if (remainingTime <= 0) {
@@ -1887,42 +1926,40 @@ function getTankForwardVector(tank) {
         }
       }
 
-      if (gameState === "playing") {
-        // 小局进行中的正常更新：玩家、AI、子弹
-        updatePlayer(dt);
+      // 小局进行中的正常更新：玩家、AI/玩家2、子弹
+      updateHumanTank(playerTank, input.player1, "player", dt);
+      if (gameMode === "pvp") {
+        // PVP：第二辆坦克使用 player2 按键输入
+        updateHumanTank(aiTank, input.player2, "ai", dt);
+      } else {
+        // PVE：保留 AI 逻辑，方便后续继续调优
         updateAI(dt);
-        updateBullets(dt);
+      }
+      updateBullets(dt);
 
-        // === 3 秒判定窗口处理 ===
-        // 一旦有坦克在 handleTankHit 中死亡，就会把 roundJudgeTimer 设为 3。
-        // 之后这 3 秒内仍然允许其它子弹继续飞行，看看会不会形成双杀：
-        //   - 若在这段时间内另一方也死亡：handleTankHit 会立刻把 pendingRoundResult 设为 "draw"；
-        //   - 若 3 秒倒计时结束时只有一方死亡：这里根据“谁还活着”来给出胜者。
-        if (roundJudgeTimer > 0) {
-          roundJudgeTimer -= dt;
-          if (roundJudgeTimer <= 0 && !pendingRoundResult) {
-            const playerAlive = playerTank && playerTank.isAlive;
-            const aiAlive = aiTank && aiTank.isAlive;
-            if (playerAlive && !aiAlive) {
-              pendingRoundResult = "playerWin";
-            } else if (!playerAlive && aiAlive) {
-              pendingRoundResult = "aiWin";
-            } else {
-              // 理论上不会发生：要么双杀（已在 handleTankHit 判平局），要么一方存活。
-              pendingRoundResult = "draw";
-            }
+      // === 3 秒判定窗口处理 ===
+      if (roundJudgeTimer > 0) {
+        roundJudgeTimer -= dt;
+        if (roundJudgeTimer <= 0 && !pendingRoundResult) {
+          const playerAlive = playerTank && playerTank.isAlive;
+          const aiAlive = aiTank && aiTank.isAlive;
+          if (playerAlive && !aiAlive) {
+            pendingRoundResult = "playerWin";
+          } else if (!playerAlive && aiAlive) {
+            pendingRoundResult = "aiWin";
+          } else {
+            pendingRoundResult = "draw";
           }
         }
+      }
 
-        updateHUD();
+      updateHUD();
 
-        // 一旦本帧内已经得出小局结果（无论是双杀平局，还是 3 秒判定超时），
-        // 都统一在这里调用 endRound 完成本小局收尾。
-        if (pendingRoundResult) {
-          const result = pendingRoundResult;
-          pendingRoundResult = null;
-          endRound(result);
-        }
+      // 一旦本帧内已经得出小局结果（双杀/判定窗口结束），统一在这里收尾
+      if (pendingRoundResult) {
+        const result = pendingRoundResult;
+        pendingRoundResult = null;
+        endRound(result);
       }
     }
 
