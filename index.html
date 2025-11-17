@@ -8,6 +8,33 @@
 </head>
 <body>
   <div class="wrapper">
+    <!-- HUD 固定在迷宫外，始终占据画布上方 -->
+    <div id="hud" class="panel panel-hud hidden">
+      <div class="hud-top">
+        <div class="hud-left">
+          <div><span id="player1Label">玩家1</span>：<span id="playerScore">0</span></div>
+          <div><span id="player2Label">玩家2</span>：<span id="aiScore">0</span></div>
+        </div>
+        <div class="hud-center">
+          <div id="timer" class="timer">05:00</div>
+        </div>
+        <div class="hud-right">
+          <div id="modeLabel">模式：</div>
+          <div id="difficultyLabel">难度：</div>
+        </div>
+      </div>
+      <div id="controlHintBar" class="hud-hint-bar">
+        玩家1：WASD + 空格 ｜ 玩家2：方向键 + M ｜ Esc 暂停
+      </div>
+      <div class="hud-bottom">
+        <div class="hud-bottom-right">
+          <button id="pauseBtn" class="btn small">暂停</button>
+          <button id="resumeBtn" class="btn small hidden">继续</button>
+          <button id="restartBtn" class="btn small ghost">重新开始</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 画布 -->
     <canvas id="gameCanvas"></canvas>
 
@@ -41,34 +68,6 @@
         <p class="hint">
           玩家1：WASD 移动，空格射击 · 玩家2：方向键移动，M 键射击 · Esc 暂停
         </p>
-      </div>
-    </div>
-
-    <!-- HUD（对战界面顶部信息 + 底部按钮） -->
-    <div id="hud" class="panel panel-hud hidden">
-      <div class="hud-top">
-        <div class="hud-left">
-          <div><span id="player1Label">玩家1</span>：<span id="playerScore">0</span></div>
-          <div><span id="player2Label">玩家2</span>：<span id="aiScore">0</span></div>
-        </div>
-        <div class="hud-center">
-          <div id="timer" class="timer">05:00</div>
-        </div>
-        <div class="hud-right">
-          <div id="modeLabel">模式：</div>
-          <div id="difficultyLabel">难度：</div>
-        </div>
-      </div>
-
-      <div class="hud-bottom">
-        <div class="hud-bottom-left">
-          玩家1：WASD+空格 · 玩家2：方向键+M · Esc 暂停
-        </div>
-        <div class="hud-bottom-right">
-          <button id="pauseBtn" class="btn small">暂停</button>
-          <button id="resumeBtn" class="btn small hidden">继续</button>
-          <button id="restartBtn" class="btn small ghost">重新开始</button>
-        </div>
       </div>
     </div>
 
