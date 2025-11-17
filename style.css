@@ -231,6 +231,10 @@ body {
   backdrop-filter: blur(14px);
 }
 
+#pauseOverlay {
+  z-index: 15;
+}
+
 .overlay-inner {
   display: flex;
   flex-direction: column;
