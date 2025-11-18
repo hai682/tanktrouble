@@ -247,6 +247,10 @@ body {
   z-index: 15;
 }
 
+#pauseOverlay {
+  z-index: 15;
+}
+
 .overlay-inner {
   display: flex;
   flex-direction: column;
