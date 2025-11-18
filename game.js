@@ -1653,6 +1653,67 @@ function getTankForwardVector(tank) {
     }
   }
 
+  // ===== 爆炸与碎片动画 =====
+  function spawnExplosion(tank) {
+    if (!tank) return;
+    const fragmentCount = 10 + Math.floor(Math.random() * 6);
+    const fragments = [];
+    for (let i = 0; i < fragmentCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = randomRange(80, 220);
+      fragments.push({
+        x: tank.x,
+        y: tank.y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size: randomRange(4, 7),
+        life: 0,
+        lifeTime: randomRange(0.4, 0.6),
+        color: tank.color,
+      });
+    }
+    explosions.push({ fragments });
+    SoundManager.explosion();
+  }
+
+  function updateExplosions(dt) {
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      const explosion = explosions[i];
+      let living = 0;
+      for (const frag of explosion.fragments) {
+        if (frag.life >= frag.lifeTime) continue;
+        frag.life += dt;
+        frag.x += frag.vx * dt;
+        frag.y += frag.vy * dt;
+        frag.vx *= 0.9;
+        frag.vy *= 0.9;
+        frag.size *= 0.985;
+        if (frag.life < frag.lifeTime) {
+          living++;
+        }
+      }
+      if (living === 0) {
+        explosions.splice(i, 1);
+      }
+    }
+  }
+
+  function drawExplosions() {
+    for (const explosion of explosions) {
+      for (const frag of explosion.fragments) {
+        if (frag.life >= frag.lifeTime) continue;
+        const progress = frag.life / frag.lifeTime;
+        const alpha = 1 - progress;
+        const size = Math.max(1, frag.size * (1 - progress * 0.6));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = frag.color;
+        ctx.fillRect(frag.x - size / 2, frag.y - size / 2, size, size);
+        ctx.restore();
+      }
+    }
+  }
+
   // ===== 小局（回合）控制 =====
   // 每一小局的生命周期：startNewRound -> （双方对战） -> 其中一方死亡 -> handleTankHit -> endRound。
   // 当前版本采用简化规则：
