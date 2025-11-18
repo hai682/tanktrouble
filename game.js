@@ -81,7 +81,7 @@ tankRadius: 18,
     background: "#020617", // 画布背景：更深的蓝灰，营造夜空感
     mazeWall: "#142040", // 迷宫墙体：比背景亮两档
     mazeOutline: "#273a5f", // 迷宫墙描边：再亮一点的蓝灰
-    mazeFrame: "#304269", // 迷宫外围边框
+    mazeFrame: "#304269", // 迷宫外围柔和描边（配合半透明减弱黑框感）
     tank1: "#4ade80", // 玩家1 坦克主体：亮绿色
     tank2: "#ff6b6b", // 玩家2 坦克主体：亮红色
     tankBarrel: "#f8fafc", // 炮管使用的浅色
@@ -138,8 +138,36 @@ tankRadius: 18,
     player1: { up: false, down: false, left: false, right: false, fire: false },
     player2: { up: false, down: false, left: false, right: false, fire: false },
   };
+  const activeKeys = new Set();
+  const suppressedKeys = new Set();
+
+  function clearAllInputStates() {
+    // 统一清除本地缓存的按键状态，并把“仍然按住”的按键编号放进 suppressedKeys，
+    // 这样即便玩家一直长按，也必须先抬起再按一次，才会重新被识别（避免上一局长按影响下一局）。
+    for (const key of Object.keys(input.player1)) {
+      input.player1[key] = false;
+    }
+    for (const key of Object.keys(input.player2)) {
+      input.player2[key] = false;
+    }
+    for (const code of activeKeys) {
+      suppressedKeys.add(code);
+    }
+    activeKeys.clear();
+  }
 
   function handleKeyChange(e, isDown) {
+    if (isDown) {
+      activeKeys.add(e.code);
+      if (suppressedKeys.has(e.code)) {
+        // 当前按键因为刚切换小局而被“压住”，等待玩家抬起后再生效
+        e.preventDefault();
+        return;
+      }
+    } else {
+      activeKeys.delete(e.code);
+      suppressedKeys.delete(e.code);
+    }
     switch (e.code) {
       // 玩家1：WASD + 空格
       case "KeyW":
@@ -419,7 +447,7 @@ function getTankForwardVector(tank) {
   let roundIndex = 0;
   let isRoundActive = false;
   let pendingRoundResult = null; // null / "playerWin" / "aiWin" / "draw"
-  let roundJudgeTimer = 0;
+  let roundJudgeTimer = 0; // >0 表示正在等待 3 秒死亡判定窗口
   const SPAWN_RECT_PLAYER = {
     x: CONFIG.mapPadding,
     y: CONFIG.canvasHeight - CONFIG.mapPadding - 180,
@@ -822,11 +850,11 @@ function getTankForwardVector(tank) {
       };
     }
 
-    // —— 出生点：只从“出口>=2 的格子”里选，且尽量相距较远 ——
+    // —— 出生点：在所有“至少有一条出口的通行格子”中随机挑选 ——
     const candidates = [];
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        if (neighbors[y][x].length >= 2) {
+        if (neighbors[y][x].length >= 1) {
           candidates.push({ x, y });
         }
       }
@@ -835,48 +863,22 @@ function getTankForwardVector(tank) {
     let playerCell = { x: 0, y: 0 };
     let aiCell = { x: cols - 1, y: rows - 1 };
 
-    if (candidates.length > 0) {
-      // 玩家：大致“左上角”的一个格子（x+y 最小）
-      playerCell = candidates.reduce((best, c) => {
-        const bestScore = best.x + best.y;
-        const score = c.x + c.y;
-        return score < bestScore ? c : best;
-      });
-
-      // BFS 计算各格子距离
-      const dist = Array.from({ length: rows }, () =>
-        Array(cols).fill(Infinity)
-      );
-      const queue = [];
-      dist[playerCell.y][playerCell.x] = 0;
-      queue.push(playerCell);
-
-      while (queue.length > 0) {
-        const cur = queue.shift();
-        const dcur = dist[cur.y][cur.x];
-        for (const nb of neighbors[cur.y][cur.x]) {
-          if (dist[nb.y][nb.x] > dcur + 1) {
-            dist[nb.y][nb.x] = dcur + 1;
-            queue.push(nb);
-          }
-        }
+    if (candidates.length >= 2) {
+      // 在候选列表里随机打乱一次，再取前两个不同的格子。
+      const shuffled = [...candidates];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
       }
-
-      // AI：从候选里选一个距离玩家最远的格子
-      let maxDist = -1;
-      for (const c of candidates) {
-        const d = dist[c.y][c.x];
-        if (
-          Number.isFinite(d) &&
-          d > maxDist &&
-          (c.x !== playerCell.x || c.y !== playerCell.y)
-        ) {
-          maxDist = d;
-          aiCell = c;
-        }
-      }
+      playerCell = shuffled[0];
+      aiCell = shuffled[1];
+    } else if (candidates.length === 1) {
+      // 极端兜底：只有一个合法格子时，把另一辆坦克放在对角附近。
+      playerCell = candidates[0];
+      aiCell = { x: clampInt(playerCell.x + 1, 0, cols - 1), y: clampInt(playerCell.y + 1, 0, rows - 1) };
     }
 
+    // 把格子坐标转换成世界坐标，得到真正的出生点。
     playerSpawnPoint = cellToWorldCenter(playerCell.x, playerCell.y);
     aiSpawnPoint = cellToWorldCenter(aiCell.x, aiCell.y);
 
@@ -1377,11 +1379,10 @@ function getTankForwardVector(tank) {
   //   1）根据击中信息算出本小局结果 result；
   //   2）把结果记到 pendingRoundResult，交给主循环在当帧末尾统一调用 endRound。
   // ===== 击中判定 & 3 秒判定窗口 =====
-  // 规则：
-  //   - 任意坦克被任意子弹击中立即判定为“死亡”，但不会立刻结束小局；
-  //   - 第一次有人阵亡时，开启一个最多 3 秒的判定窗口（roundJudgeTimer）；
-  //   - 如果在这 3 秒内对手也死亡 => 双杀，立即把 pendingRoundResult 设为 "draw"；
-  //   - 如果 3 秒过去仍然只有一方死亡 => 存活的一方胜利，由 gameLoop 按存活方决定结果。
+  // 时间轴：
+  //   1）第一辆坦克被击毁时，标记死亡并启动 3 秒倒计时（roundJudgeTimer = 3）。
+  //   2）倒计时期间，无论对手是否立刻死亡，都保持当前局面并让玩家有 3 秒缓冲。
+  //   3）倒计时归零后，才根据“存活情况”一次性判定胜负/平局，再交给 endRound。
   function handleTankHit(victim) {
     if (!victim || !victim.isAlive) return;
 
@@ -1399,14 +1400,8 @@ function getTankForwardVector(tank) {
       roundJudgeTimer = 3.0;
     }
 
-    const playerDead = playerTank && !playerTank.isAlive;
-    const aiDead = aiTank && !aiTank.isAlive;
-
-    // 双杀（可能是自杀 + 反弹、或双方互相击杀）：直接判定平局，
-    // 在 gameLoop 本帧末尾统一调用 endRound("draw")。
-    if (playerDead && aiDead && !pendingRoundResult) {
-      pendingRoundResult = "draw";
-    }
+    // 双杀/单杀的最终胜负在 gameLoop 中 roundJudgeTimer 归零时统一判断，
+    // 这里不再立即给出结果，保证“无论如何都等待满 3 秒”这一体验。
   }
 
 
@@ -1670,6 +1665,7 @@ function getTankForwardVector(tank) {
     roundIndex++;
     isRoundActive = true;
     explosions = []; // 新局前清空残留的爆炸碎片
+    clearAllInputStates(); // 进入新局前强制松手，避免上一局长按直接继承
 
     // 每一小局开始时重置 3 秒判定状态
     roundJudgeTimer = 0;
@@ -1720,6 +1716,7 @@ function getTankForwardVector(tank) {
   function endRound(result) {
     if (!isRoundActive) return; // 防止重复结束同一小局
     isRoundActive = false;
+    clearAllInputStates(); // 小局落定瞬间清理所有输入状态，3 秒窗口结束后不会带入下一局
 
     // 一旦小局结果落定，立即清空场上所有子弹，
     // 防止残余子弹飞进下一局，或者影响 3 秒判定之后的新局。
@@ -1770,6 +1767,7 @@ function getTankForwardVector(tank) {
     remainingTime = CONFIG.timeLimit;
     bullets = [];
     explosions = [];
+    clearAllInputStates(); // 整场重置时同步清空按键缓存
 
     // 新的整场对战从第 0 局开始，随后 startNewRound 会递增到 1
     roundIndex = 0;
@@ -1902,24 +1900,28 @@ function getTankForwardVector(tank) {
     isRoundActive = false;
     pendingRoundResult = null;
     roundJudgeTimer = 0;
+    clearAllInputStates(); // 回到菜单同样要清键，避免背景长按
     updateHUD();
     updateCanvasScale();
   }
 
   // ===== 渲染 =====
   function drawBackground() {
-    // 深蓝背景 + 迷宫外边框
+    // 深蓝背景直接铺满画布，外围描边使用半透明的深蓝色，避免出现突兀的黑色硬边框。
     ctx.fillStyle = COLORS.background;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    ctx.save();
     ctx.strokeStyle = COLORS.mazeFrame;
-    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.3;
+    ctx.lineWidth = 1.2;
     ctx.strokeRect(
       CONFIG.mapPadding - 4,
       CONFIG.mapPadding - 4,
       canvas.width - CONFIG.mapPadding * 2 + 8,
       canvas.height - CONFIG.mapPadding * 2 + 8
     );
+    ctx.restore();
   }
 
   function drawObstacles() {
@@ -2043,10 +2045,11 @@ function getTankForwardVector(tank) {
       updateBullets(dt);
       updateExplosions(dt);
 
-      // === 3 秒判定窗口处理 ===
+      // === 3 秒判定窗口处理：第一辆坦克死亡后固定等满 3 秒再判定胜负 ===
       if (roundJudgeTimer > 0) {
         roundJudgeTimer -= dt;
         if (roundJudgeTimer <= 0 && !pendingRoundResult) {
+          roundJudgeTimer = 0;
           const playerAlive = playerTank && playerTank.isAlive;
           const aiAlive = aiTank && aiTank.isAlive;
           if (playerAlive && !aiAlive) {

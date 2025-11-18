@@ -40,7 +40,7 @@ body {
   border-radius: 18px;
   background: #010818;
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.65);
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  border: none; /* 去掉画布外围的黑框，让迷宫直接融入深蓝背景 */
 }
 
 /* 通用面板 */
