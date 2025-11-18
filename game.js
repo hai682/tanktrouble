@@ -88,6 +88,36 @@ tankRadius: 18,
     tankTread: "#00000066", // 履带阴影
     bullet: "#020202", // 子弹主体：纯黑
     bulletOutline: "#94a3b8", // 子弹细描边，防止在深色背景里丢失
+    itemSpeed: "#fde047", // 加速道具：亮黄色闪电
+    itemShield: "#60a5fa", // 护盾道具：蓝色圆环
+    itemLaser: "#f87171", // 激光道具：红色发射器
+    shieldRing: "rgba(96,165,250,0.65)", // 护盾激活时的环形光圈
+    laserPreview: "rgba(103,232,249,0.75)", // 激光预览虚线颜色
+    laserBeam: "rgba(248,250,252,0.9)", // 实际激光束颜色
+  };
+
+  // ===== 技能常量：统一管理三种一次性道具 =====
+  const SkillTypes = {
+    SPEED: "speed",
+    SHIELD: "shield",
+    LASER: "laser",
+  };
+
+  const SKILL_DISPLAY_NAMES = {
+    [SkillTypes.SPEED]: "加速",
+    [SkillTypes.SHIELD]: "护盾",
+    [SkillTypes.LASER]: "激光",
+  };
+
+  const ITEM_SPAWN_INTERVAL = 15; // 道具每 15 秒刷新一次
+  const SPEED_SKILL_DURATION = 5;
+  const SHIELD_DURATION = 3;
+  const SPEED_MULTIPLIER = 2;
+  const LASER_CONFIG = {
+    maxLength: 1400,
+    maxBounces: 5,
+    previewLength: 320,
+    duration: 0.16, // 激光显示时长
   };
 
   const GameMode = {
@@ -112,9 +142,18 @@ tankRadius: 18,
   const player2LabelEl = document.getElementById("player2Label");
   const playerScoreEl = document.getElementById("playerScore");
   const aiScoreEl = document.getElementById("aiScore");
+  const player1SkillStatusEl = document.getElementById("player1SkillStatus");
+  const player2SkillStatusEl = document.getElementById("player2SkillStatus");
   const timerEl = document.getElementById("timer");
   const modeLabelEl = document.getElementById("modeLabel");
   const difficultyLabelEl = document.getElementById("difficultyLabel");
+  const controlHintBar = document.getElementById("controlHintBar");
+
+  const CONTROL_HINT_TEXT =
+    "道具每 15 秒随机掉落，坦克经过自动拾取 ｜ 玩家1：WASD + 空格 + F ｜ 玩家2：方向键 + M + / ｜ Esc 暂停";
+  if (controlHintBar) {
+    controlHintBar.textContent = CONTROL_HINT_TEXT;
+  }
 
   const pauseBtn = document.getElementById("pauseBtn");
   const resumeBtn = document.getElementById("resumeBtn");
@@ -135,11 +174,26 @@ tankRadius: 18,
   // ===== 输入状态 =====
   const input = {
     // 双人按键状态拆成两个对象，避免互相覆盖
-    player1: { up: false, down: false, left: false, right: false, fire: false },
-    player2: { up: false, down: false, left: false, right: false, fire: false },
+    player1: {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      fire: false,
+      skill: false,
+    },
+    player2: {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      fire: false,
+      skill: false,
+    },
   };
   const activeKeys = new Set();
   const suppressedKeys = new Set();
+  const skillRequests = { player1: false, player2: false };
 
   function clearAllInputStates() {
     // 统一清除本地缓存的按键状态，并把“仍然按住”的按键编号放进 suppressedKeys，
@@ -154,6 +208,8 @@ tankRadius: 18,
       suppressedKeys.add(code);
     }
     activeKeys.clear();
+    skillRequests.player1 = false;
+    skillRequests.player2 = false;
   }
 
   function handleKeyChange(e, isDown) {
@@ -190,6 +246,17 @@ tankRadius: 18,
         input.player1.fire = isDown;
         e.preventDefault();
         break;
+      case "KeyF":
+        if (isDown) {
+          if (!input.player1.skill) {
+            skillRequests.player1 = true; // 只在按下瞬间记录一次释放请求
+          }
+          input.player1.skill = true;
+        } else {
+          input.player1.skill = false;
+        }
+        e.preventDefault();
+        break;
 
       // 玩家2：方向键 + M
       case "ArrowUp":
@@ -210,6 +277,17 @@ tankRadius: 18,
         break;
       case "KeyM":
         input.player2.fire = isDown;
+        e.preventDefault();
+        break;
+      case "Slash":
+        if (isDown) {
+          if (!input.player2.skill) {
+            skillRequests.player2 = true;
+          }
+          input.player2.skill = true;
+        } else {
+          input.player2.skill = false;
+        }
         e.preventDefault();
         break;
 
@@ -339,6 +417,65 @@ function getTankForwardVector(tank) {
     return segmentIntersectsRect(x1, y1, x2, y2, rect);
   }
 
+  // 线段/矩形射线检测：激光会用到，返回命中距离与法线
+  function raycastRect(x, y, dirX, dirY, rect, maxDist = Infinity) {
+    const EPS = 1e-6;
+    let txMin = -Infinity;
+    let txMax = Infinity;
+    let tyMin = -Infinity;
+    let tyMax = Infinity;
+
+    if (Math.abs(dirX) < EPS) {
+      if (x < rect.x || x > rect.x + rect.w) return null;
+    } else {
+      const tx1 = (rect.x - x) / dirX;
+      const tx2 = (rect.x + rect.w - x) / dirX;
+      txMin = Math.min(tx1, tx2);
+      txMax = Math.max(tx1, tx2);
+    }
+
+    if (Math.abs(dirY) < EPS) {
+      if (y < rect.y || y > rect.y + rect.h) return null;
+    } else {
+      const ty1 = (rect.y - y) / dirY;
+      const ty2 = (rect.y + rect.h - y) / dirY;
+      tyMin = Math.min(ty1, ty2);
+      tyMax = Math.max(ty1, ty2);
+    }
+
+    const tEntry = Math.max(0, txMin, tyMin);
+    const tExit = Math.min(txMax, tyMax, maxDist);
+    if (tExit < 0 || tEntry > tExit || tEntry > maxDist) return null;
+
+    const hitAxis = txMin > tyMin ? "vertical" : "horizontal";
+    let normal = { x: 0, y: 0 };
+    if (hitAxis === "vertical") {
+      normal = { x: dirX > 0 ? -1 : 1, y: 0 };
+    } else {
+      normal = { x: 0, y: dirY > 0 ? -1 : 1 };
+    }
+    return { dist: tEntry, normal };
+  }
+
+  function raycastCircle(x, y, dirX, dirY, cx, cy, radius, maxDist = Infinity) {
+    const toCircleX = cx - x;
+    const toCircleY = cy - y;
+    const proj = toCircleX * dirX + toCircleY * dirY;
+    if (proj < 0) return null;
+    const distSq =
+      toCircleX * toCircleX + toCircleY * toCircleY - proj * proj;
+    const radiusSq = radius * radius;
+    if (distSq > radiusSq) return null;
+    const thc = Math.sqrt(radiusSq - distSq);
+    const t = proj - thc;
+    if (t <= 1e-4 || t > maxDist) return null;
+    const hitX = x + dirX * t;
+    const hitY = y + dirY * t;
+    const nx = (hitX - cx) / radius;
+    const ny = (hitY - cy) / radius;
+    return { dist: t, normal: { x: nx, y: ny }, point: { x: hitX, y: hitY } };
+  }
+
   // ===== 声音管理（集中控制关键反馈音效，屏蔽反弹/新局提示等噪音） =====
   const SoundManager = {
     enabled: true,
@@ -409,6 +546,12 @@ function getTankForwardVector(tank) {
     lose() {
       this.play(160, 0.3, "sine", 0.2);
     },
+    pickup() {
+      this.play(740, 0.18, "sawtooth", 0.16); // 拾取技能的提示音
+    },
+    laser() {
+      this.play(1280, 0.1, "square", 0.22); // 激光发射声：短促尖锐
+    },
   };
 
   function updateMuteButton() {
@@ -434,6 +577,8 @@ function getTankForwardVector(tank) {
   let obstacles = [];
   let bullets = [];
   let explosions = []; // 爆炸/碎片效果集合
+  let items = []; // 场上随机掉落的技能道具
+  let activeLasers = []; // 激活后短暂显示的激光轨迹
   let playerTank = null;
   let aiTank = null; // 在 PVP 模式下也沿用 aiTank 变量承载玩家2
   let maze = null;
@@ -442,12 +587,14 @@ function getTankForwardVector(tank) {
   let playerScore = 0;
   let aiScore = 0;
   let remainingTime = CONFIG.timeLimit;
+  let matchElapsedTime = 0; // 游戏进行的总时长（暂停时不增加，用于道具计时）
 
   let navGrid = null;
   let roundIndex = 0;
   let isRoundActive = false;
   let pendingRoundResult = null; // null / "playerWin" / "aiWin" / "draw"
   let roundJudgeTimer = 0; // >0 表示正在等待 3 秒死亡判定窗口
+  let nextItemSpawnTime = 0; // 下一次刷新技能道具的时间戳（基于 matchElapsedTime）
   const SPAWN_RECT_PLAYER = {
     x: CONFIG.mapPadding,
     y: CONFIG.canvasHeight - CONFIG.mapPadding - 180,
@@ -954,6 +1101,11 @@ function getTankForwardVector(tank) {
       vy: 0,
       shootCooldown: 0,
       isAlive: true,   // 是否存活，用于 3 秒判定 & 禁止幽灵移动/开火
+      heldSkill: null, // 当前持有的一次性技能
+      speedMultiplier: 1,
+      speedEndTime: 0,
+      shieldActive: false,
+      shieldEndTime: 0,
     };
   }
 
@@ -977,6 +1129,11 @@ function getTankForwardVector(tank) {
       jitterSide: 0,
       reactionTimer: 0,
       isAlive: true,   // 同样加上存活标记
+      heldSkill: null,
+      speedMultiplier: 1,
+      speedEndTime: 0,
+      shieldActive: false,
+      shieldEndTime: 0,
     };
   }
 
@@ -1029,9 +1186,23 @@ function getTankForwardVector(tank) {
     tank.y = spawnRect.y + spawnRect.h / 2;
   }
 
-   function respawnTank(tank) {
+  function respawnTank(tank) {
     // 小局内重生时，也使用当前迷宫的出生点逻辑
     placeTankAtMazeSpawn(tank);
+  }
+
+  function resetTankSkillState(tank) {
+    if (!tank) return;
+    tank.heldSkill = null;
+    tank.speedMultiplier = 1;
+    tank.speedEndTime = 0;
+    tank.shieldActive = false;
+    tank.shieldEndTime = 0;
+  }
+
+  function describeHeldSkill(tank) {
+    if (!tank || !tank.heldSkill) return "无";
+    return SKILL_DISPLAY_NAMES[tank.heldSkill.type] || "无";
   }
 
 
@@ -1043,19 +1214,24 @@ function getTankForwardVector(tank) {
     return count;
   }
 
-  function spawnBulletFromTank(tank) {
+  function getTankMuzzlePosition(tank) {
     const forward = getTankForwardVector(tank);
+    const spawnOffset = tank.radius + CONFIG.bulletRadius + 4;
+    return {
+      x: tank.x + forward.x * spawnOffset,
+      y: tank.y + forward.y * spawnOffset,
+      dir: forward,
+    };
+  }
 
-  // 子弹出生点在坦克前方，确保不会卡在坦克内部
-    const spawnOffset = tank.radius + CONFIG.bulletRadius + 4; // +4 再多留一点距离
-    const x = tank.x + forward.x * spawnOffset;
-    const y = tank.y + forward.y * spawnOffset;
+  function spawnBulletFromTank(tank) {
+    const muzzle = getTankMuzzlePosition(tank);
 
     const bullet = {
-    x,
-    y,
-    vx: forward.x * CONFIG.bulletSpeed,
-    vy: forward.y * CONFIG.bulletSpeed,
+    x: muzzle.x,
+    y: muzzle.y,
+    vx: muzzle.dir.x * CONFIG.bulletSpeed,
+    vy: muzzle.dir.y * CONFIG.bulletSpeed,
     radius: CONFIG.bulletRadius,
     bouncesLeft: CONFIG.bulletMaxBounces,
     life: 0,
@@ -1065,6 +1241,21 @@ function getTankForwardVector(tank) {
   bullets.push(bullet);
   SoundManager.shoot();
 }
+
+  function reflectBulletFromShield(bullet, tank) {
+    // 护盾命中时，把子弹按照入射角镜面反射回去
+    const dx = bullet.x - tank.x;
+    const dy = bullet.y - tank.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = dx / len;
+    const ny = dy / len;
+    const dot = bullet.vx * nx + bullet.vy * ny;
+    bullet.vx = bullet.vx - 2 * dot * nx;
+    bullet.vy = bullet.vy - 2 * dot * ny;
+    bullet.x = tank.x + nx * (tank.radius + bullet.radius + 2);
+    bullet.y = tank.y + ny * (tank.radius + bullet.radius + 2);
+    bullet.bouncesLeft = Math.max(0, bullet.bouncesLeft - 1);
+  }
   function moveTankWithCollisions(tank, moveX, moveY) {
     const r = tank.radius;
 
@@ -1113,7 +1304,8 @@ function getTankForwardVector(tank) {
 
     // 3）按当前朝向和 moveDir 计算速度
     const forward = getTankForwardVector(tank);
-    const moveSpeed = CONFIG.tankSpeedByDifficulty[currentDifficulty];
+    const moveSpeed =
+      CONFIG.tankSpeedByDifficulty[currentDifficulty] * (tank.speedMultiplier || 1);
     const vx = forward.x * moveSpeed * moveDir;
     const vy = forward.y * moveSpeed * moveDir;
     tank.vx = vx;
@@ -1125,9 +1317,126 @@ function getTankForwardVector(tank) {
       tank.shootCooldown -= dt;
     }
     if (controlState.fire && tank.shootCooldown <= 0) {
-      if (countBulletsForOwner(ownerKey) < CONFIG.maxBulletsPerTank) {
+      if (tank.heldSkill && tank.heldSkill.type === SkillTypes.LASER) {
+        if (fireLaserFromTank(tank)) {
+          tank.heldSkill = null; // 激光是一次性的，打完立刻消耗
+          tank.shootCooldown = CONFIG.playerShootInterval;
+        }
+      } else if (countBulletsForOwner(ownerKey) < CONFIG.maxBulletsPerTank) {
         spawnBulletFromTank(tank);
         tank.shootCooldown = CONFIG.playerShootInterval;
+      }
+    }
+  }
+
+  function processSkillRequests() {
+    if (skillRequests.player1) {
+      useHeldSkill(playerTank);
+      skillRequests.player1 = false;
+    }
+    if (skillRequests.player2) {
+      useHeldSkill(aiTank);
+      skillRequests.player2 = false;
+    }
+  }
+
+  function useHeldSkill(tank) {
+    if (!tank || !tank.isAlive || !tank.heldSkill) return;
+    if (tank.heldSkill.type === SkillTypes.SPEED) {
+      tank.speedMultiplier = SPEED_MULTIPLIER;
+      tank.speedEndTime = matchElapsedTime + SPEED_SKILL_DURATION;
+      tank.heldSkill = null;
+      SoundManager.play(980, 0.12, "triangle", 0.14); // 简单的加速提示音
+    } else if (tank.heldSkill.type === SkillTypes.SHIELD) {
+      tank.shieldActive = true;
+      tank.shieldEndTime = matchElapsedTime + SHIELD_DURATION;
+      tank.heldSkill = null;
+      SoundManager.play(620, 0.16, "sine", 0.18);
+    }
+    // 激光不在这里触发，沿用普通开火键，在 updateHumanTank 内处理
+  }
+
+  function updateTankSkillEffects(tank) {
+    if (!tank) return;
+    if (tank.speedMultiplier !== 1 && matchElapsedTime >= tank.speedEndTime) {
+      tank.speedMultiplier = 1;
+      tank.speedEndTime = 0;
+    }
+    if (tank.shieldActive && matchElapsedTime >= tank.shieldEndTime) {
+      tank.shieldActive = false;
+      tank.shieldEndTime = 0;
+    }
+  }
+
+  // ===== 道具刷新 & 拾取 =====
+  function scheduleNextItemSpawn(delay = ITEM_SPAWN_INTERVAL) {
+    nextItemSpawnTime = matchElapsedTime + delay;
+  }
+
+  function pickRandomItemLocation() {
+    if (!maze) return null;
+    const cells = [];
+    for (let y = 0; y < maze.rows; y++) {
+      for (let x = 0; x < maze.cols; x++) {
+        if (maze.neighbors[y][x] && maze.neighbors[y][x].length > 0) {
+          cells.push({ x, y });
+        }
+      }
+    }
+    if (!cells.length) return null;
+    const tries = Math.min(80, cells.length * 2);
+    const cellSize = maze.cellSize;
+    for (let i = 0; i < tries; i++) {
+      const pick = cells[Math.floor(Math.random() * cells.length)];
+      const cx = maze.originX + pick.x * cellSize + cellSize / 2;
+      const cy = maze.originY + pick.y * cellSize + cellSize / 2;
+      const safeRadius = CONFIG.tankRadius * 2.4;
+      const nearPlayer =
+        playerTank && Math.hypot(playerTank.x - cx, playerTank.y - cy) < safeRadius;
+      const nearAi =
+        aiTank && Math.hypot(aiTank.x - cx, aiTank.y - cy) < safeRadius;
+      if (nearPlayer || nearAi) continue;
+      return { x: cx, y: cy };
+    }
+    const fallback = cells[0];
+    return {
+      x: maze.originX + fallback.x * cellSize + cellSize / 2,
+      y: maze.originY + fallback.y * cellSize + cellSize / 2,
+    };
+  }
+
+  function spawnRandomItem() {
+    const location = pickRandomItemLocation();
+    if (!location) return false;
+    const types = [SkillTypes.SPEED, SkillTypes.SHIELD, SkillTypes.LASER];
+    const type = types[Math.floor(Math.random() * types.length)];
+    items.push({ type, x: location.x, y: location.y, radius: 14 });
+    return true;
+  }
+
+  function updateItemSpawns() {
+    if (!isRoundActive || !maze || items.length > 0) return;
+    if (matchElapsedTime >= nextItemSpawnTime) {
+      if (spawnRandomItem()) {
+        scheduleNextItemSpawn();
+      } else {
+        scheduleNextItemSpawn(3); // 极端情况下无法生成，稍后再试
+      }
+    }
+  }
+
+  function handleItemPickup(tank) {
+    if (!tank || !tank.isAlive || tank.heldSkill) return;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      const dx = tank.x - item.x;
+      const dy = tank.y - item.y;
+      const rr = tank.radius + item.radius;
+      if (dx * dx + dy * dy <= rr * rr) {
+        tank.heldSkill = { type: item.type };
+        items.splice(i, 1);
+        SoundManager.pickup();
+        break;
       }
     }
   }
@@ -1391,6 +1700,7 @@ function getTankForwardVector(tank) {
     victim.vx = 0;
     victim.vy = 0;
     victim.shootCooldown = Infinity;
+    resetTankSkillState(victim); // 死亡瞬间清空技能与增益状态
     spawnExplosion(victim); // 触发爆炸效果与音效
 
     // 第一次有人阵亡：开启 3 秒判定窗口
@@ -1503,6 +1813,10 @@ function getTankForwardVector(tank) {
         const dy = b.y - playerTank.y;
         const rr = b.radius + playerTank.radius;
         if (dx * dx + dy * dy <= rr * rr) {
+          if (playerTank.shieldActive) {
+            reflectBulletFromShield(b, playerTank);
+            continue;
+          }
           bullets.splice(i, 1);
           handleTankHit(playerTank);
           continue;
@@ -1513,10 +1827,136 @@ function getTankForwardVector(tank) {
         const dy = b.y - aiTank.y;
         const rr = b.radius + aiTank.radius;
         if (dx * dx + dy * dy <= rr * rr) {
+          if (aiTank.shieldActive) {
+            reflectBulletFromShield(b, aiTank);
+            continue;
+          }
           bullets.splice(i, 1);
           handleTankHit(aiTank);
           continue;
         }
+      }
+    }
+  }
+
+  function findNearestLaserCollision(x, y, dirX, dirY, maxDist, shooter) {
+    let best = null;
+    for (const o of obstacles) {
+      const hit = raycastRect(x, y, dirX, dirY, o, maxDist);
+      if (hit && hit.dist > 1e-3) {
+        if (!best || hit.dist < best.dist) {
+          best = { type: "wall", dist: hit.dist, normal: hit.normal };
+        }
+      }
+    }
+    const tanks = [playerTank, aiTank];
+    for (const tank of tanks) {
+      if (!tank || !tank.isAlive) continue;
+      const hit = raycastCircle(x, y, dirX, dirY, tank.x, tank.y, tank.radius, maxDist);
+      if (!hit) continue;
+      if (tank === shooter && hit.dist < tank.radius * 0.5) continue;
+      if (!best || hit.dist < best.dist) {
+        best = {
+          type: "tank",
+          dist: hit.dist,
+          normal: hit.normal,
+          tank,
+        };
+      }
+    }
+    return best;
+  }
+
+  function computeLaserPath(start, direction, maxLength, maxBounces, shooter) {
+    const dirLen = Math.hypot(direction.x, direction.y) || 1;
+    let dirX = direction.x / dirLen;
+    let dirY = direction.y / dirLen;
+    let remaining = maxLength;
+    let currentX = start.x;
+    let currentY = start.y;
+    let bounces = 0;
+    const segments = [];
+    let hitTank = null;
+
+    while (remaining > 0 && bounces <= maxBounces) {
+      const hit = findNearestLaserCollision(
+        currentX,
+        currentY,
+        dirX,
+        dirY,
+        remaining,
+        shooter
+      );
+      const travel = hit ? Math.min(hit.dist, remaining) : remaining;
+      const nextX = currentX + dirX * travel;
+      const nextY = currentY + dirY * travel;
+      segments.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY });
+      remaining -= travel;
+      currentX = nextX;
+      currentY = nextY;
+
+      if (!hit) break;
+
+      if (hit.type === "tank") {
+        if (hit.tank.shieldActive) {
+          // 护盾命中点反射激光，法线由圆心指向撞击点
+          const dot = dirX * hit.normal.x + dirY * hit.normal.y;
+          dirX = dirX - 2 * dot * hit.normal.x;
+          dirY = dirY - 2 * dot * hit.normal.y;
+          const len = Math.hypot(dirX, dirY) || 1;
+          dirX /= len;
+          dirY /= len;
+          currentX += dirX * 2;
+          currentY += dirY * 2;
+          remaining = Math.max(0, remaining - 2);
+          bounces++;
+          continue;
+        } else {
+          hitTank = hit.tank;
+          break;
+        }
+      } else if (hit.type === "wall") {
+        const dot = dirX * hit.normal.x + dirY * hit.normal.y;
+        dirX = dirX - 2 * dot * hit.normal.x;
+        dirY = dirY - 2 * dot * hit.normal.y;
+        const len = Math.hypot(dirX, dirY) || 1;
+        dirX /= len;
+        dirY /= len;
+        currentX += dirX * 1.5;
+        currentY += dirY * 1.5;
+        remaining = Math.max(0, remaining - 1.5);
+        bounces++;
+      }
+    }
+
+    return { segments, hitTank };
+  }
+
+  function fireLaserFromTank(tank) {
+    const muzzle = getTankMuzzlePosition(tank);
+    const result = computeLaserPath(
+      { x: muzzle.x, y: muzzle.y },
+      muzzle.dir,
+      LASER_CONFIG.maxLength,
+      LASER_CONFIG.maxBounces,
+      tank
+    );
+    if (!result.segments.length) return false;
+    // 激光触发：计算轨迹、立即判定伤害，并把轨迹保存下来用于 0.16 秒的视觉残影
+    activeLasers.push({ segments: result.segments, life: 0, duration: LASER_CONFIG.duration });
+    SoundManager.laser();
+    if (result.hitTank) {
+      handleTankHit(result.hitTank);
+    }
+    return true;
+  }
+
+  function updateActiveLasers(dt) {
+    for (let i = activeLasers.length - 1; i >= 0; i--) {
+      const laser = activeLasers[i];
+      laser.life += dt;
+      if (laser.life >= laser.duration) {
+        activeLasers.splice(i, 1);
       }
     }
   }
@@ -1530,6 +1970,16 @@ function getTankForwardVector(tank) {
     const opponentName = gameMode === "pvp" ? "玩家2" : "电脑";
     player1LabelEl.textContent = playerName;
     player2LabelEl.textContent = opponentName;
+    if (player1SkillStatusEl) {
+      player1SkillStatusEl.textContent = `${playerName} 当前道具：${describeHeldSkill(
+        playerTank
+      )}`;
+    }
+    if (player2SkillStatusEl) {
+      player2SkillStatusEl.textContent = `${opponentName} 当前道具：${describeHeldSkill(
+        aiTank
+      )}`;
+    }
 
     if (currentMode === GameMode.TIME) {
       timerEl.style.visibility = "visible";
@@ -1714,6 +2164,67 @@ function getTankForwardVector(tank) {
     }
   }
 
+  // ===== 爆炸与碎片动画 =====
+  function spawnExplosion(tank) {
+    if (!tank) return;
+    const fragmentCount = 10 + Math.floor(Math.random() * 6);
+    const fragments = [];
+    for (let i = 0; i < fragmentCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = randomRange(80, 220);
+      fragments.push({
+        x: tank.x,
+        y: tank.y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size: randomRange(4, 7),
+        life: 0,
+        lifeTime: randomRange(0.4, 0.6),
+        color: tank.color,
+      });
+    }
+    explosions.push({ fragments });
+    SoundManager.explosion();
+  }
+
+  function updateExplosions(dt) {
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      const explosion = explosions[i];
+      let living = 0;
+      for (const frag of explosion.fragments) {
+        if (frag.life >= frag.lifeTime) continue;
+        frag.life += dt;
+        frag.x += frag.vx * dt;
+        frag.y += frag.vy * dt;
+        frag.vx *= 0.9;
+        frag.vy *= 0.9;
+        frag.size *= 0.985;
+        if (frag.life < frag.lifeTime) {
+          living++;
+        }
+      }
+      if (living === 0) {
+        explosions.splice(i, 1);
+      }
+    }
+  }
+
+  function drawExplosions() {
+    for (const explosion of explosions) {
+      for (const frag of explosion.fragments) {
+        if (frag.life >= frag.lifeTime) continue;
+        const progress = frag.life / frag.lifeTime;
+        const alpha = 1 - progress;
+        const size = Math.max(1, frag.size * (1 - progress * 0.6));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = frag.color;
+        ctx.fillRect(frag.x - size / 2, frag.y - size / 2, size, size);
+        ctx.restore();
+      }
+    }
+  }
+
   // ===== 小局（回合）控制 =====
   // 每一小局的生命周期：startNewRound -> （双方对战） -> 其中一方死亡 -> handleTankHit -> endRound。
   // 当前版本采用简化规则：
@@ -1726,6 +2237,8 @@ function getTankForwardVector(tank) {
     roundIndex++;
     isRoundActive = true;
     explosions = []; // 新局前清空残留的爆炸碎片
+    items = []; // 道具只在当前小局有效，开局重新刷新计时
+    activeLasers = [];
     clearAllInputStates(); // 进入新局前强制松手，避免上一局长按直接继承
 
     // 每一小局开始时重置 3 秒判定状态
@@ -1746,6 +2259,7 @@ function getTankForwardVector(tank) {
     playerTank.angle = -Math.PI / 2; // 默认朝上
     playerTank.shootCooldown = 0;
     playerTank.isAlive = true;
+    resetTankSkillState(playerTank);
 
     // 重置 AI 坦克基础状态
     aiTank.vx = 0;
@@ -1759,11 +2273,13 @@ function getTankForwardVector(tank) {
     aiTank.jitterSide = 0;
     aiTank.reactionTimer = 0;
     aiTank.isAlive = true;
+    resetTankSkillState(aiTank);
 
     // 使用当前迷宫的出生点放置坦克
     // （迷宫本身会在 resetMatch 或上一局 endRound 中被刷新）
     placeTankAtMazeSpawn(playerTank);
     placeTankAtMazeSpawn(aiTank);
+    scheduleNextItemSpawn();
   }
 
 
@@ -1782,6 +2298,10 @@ function getTankForwardVector(tank) {
     // 一旦小局结果落定，立即清空场上所有子弹，
     // 防止残余子弹飞进下一局，或者影响 3 秒判定之后的新局。
     bullets = [];
+    items = [];
+    activeLasers = [];
+    resetTankSkillState(playerTank);
+    resetTankSkillState(aiTank);
 
     // 关闭 3 秒判定窗口
     roundJudgeTimer = 0;
@@ -1828,6 +2348,10 @@ function getTankForwardVector(tank) {
     remainingTime = CONFIG.timeLimit;
     bullets = [];
     explosions = [];
+    items = [];
+    activeLasers = [];
+    matchElapsedTime = 0;
+    nextItemSpawnTime = 0;
     clearAllInputStates(); // 整场重置时同步清空按键缓存
 
     // 新的整场对战从第 0 局开始，随后 startNewRound 会递增到 1
@@ -1953,6 +2477,8 @@ function getTankForwardVector(tank) {
     menuEl.classList.remove("hidden");
     bullets = [];
     explosions = [];
+    items = [];
+    activeLasers = [];
     playerScore = 0;
     aiScore = 0;
     remainingTime = CONFIG.timeLimit;
@@ -1961,6 +2487,8 @@ function getTankForwardVector(tank) {
     isRoundActive = false;
     pendingRoundResult = null;
     roundJudgeTimer = 0;
+    matchElapsedTime = 0;
+    nextItemSpawnTime = 0;
     clearAllInputStates(); // 回到菜单同样要清键，避免背景长按
     updateHUD();
     updateCanvasScale();
@@ -1993,6 +2521,52 @@ function getTankForwardVector(tank) {
       ctx.strokeStyle = COLORS.mazeOutline;
       ctx.lineWidth = 2;
       ctx.strokeRect(o.x, o.y, o.w, o.h);
+    }
+  }
+
+  function drawItems() {
+    for (const item of items) {
+      ctx.save();
+      ctx.translate(item.x, item.y);
+      ctx.shadowColor = "rgba(0,0,0,0.4)";
+      ctx.shadowBlur = 6;
+      if (item.type === SkillTypes.SPEED) {
+        ctx.fillStyle = COLORS.itemSpeed;
+        ctx.beginPath();
+        ctx.moveTo(-4, -10);
+        ctx.lineTo(4, -2);
+        ctx.lineTo(0, -2);
+        ctx.lineTo(6, 10);
+        ctx.lineTo(-2, 2);
+        ctx.lineTo(2, 2);
+        ctx.closePath();
+        ctx.fill();
+      } else if (item.type === SkillTypes.SHIELD) {
+        ctx.strokeStyle = COLORS.itemShield;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, item.radius * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, item.radius * 0.25, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = COLORS.itemLaser;
+        ctx.beginPath();
+        ctx.moveTo(0, -10);
+        ctx.lineTo(8, 0);
+        ctx.lineTo(0, 10);
+        ctx.lineTo(-8, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = COLORS.bulletOutline;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-8, 0);
+        ctx.lineTo(8, 0);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
   }
 
@@ -2035,7 +2609,8 @@ function getTankForwardVector(tank) {
     ctx.fillRect(-r * 0.4, -r * 0.4, r * 0.8, r * 0.8);
 
     // 炮管：默认沿 +X 方向，旋转后就是当前炮口方向
-    ctx.fillStyle = COLORS.tankBarrel;
+    const hasLaser = tank.heldSkill && tank.heldSkill.type === SkillTypes.LASER;
+    ctx.fillStyle = hasLaser ? COLORS.laserPreview : COLORS.tankBarrel;
     ctx.fillRect(0, -gunWidth / 2, gunLength, gunWidth);
 
     // 两侧履带
@@ -2044,6 +2619,17 @@ function getTankForwardVector(tank) {
     ctx.fillRect(-halfBodyL, halfBodyW, bodyLength, treadWidth);
 
     ctx.restore();
+
+    if (tank.shieldActive) {
+      // 护盾显示为半透明光圈，提示当前免疫状态
+      ctx.save();
+      ctx.strokeStyle = COLORS.shieldRing;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(tank.x, tank.y, tank.radius + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
 
@@ -2060,13 +2646,62 @@ function getTankForwardVector(tank) {
     }
   }
 
+  function drawLaserPreviews() {
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = COLORS.laserPreview;
+    const tanks = [playerTank, aiTank];
+    for (const tank of tanks) {
+      if (!tank || !tank.isAlive) continue;
+      if (!tank.heldSkill || tank.heldSkill.type !== SkillTypes.LASER) continue;
+      const muzzle = getTankMuzzlePosition(tank);
+      const path = computeLaserPath(
+        { x: muzzle.x, y: muzzle.y },
+        muzzle.dir,
+        LASER_CONFIG.previewLength,
+        2,
+        tank
+      );
+      for (const seg of path.segments) {
+        ctx.beginPath();
+        ctx.moveTo(seg.x1, seg.y1);
+        ctx.lineTo(seg.x2, seg.y2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawActiveLasers() {
+    if (!activeLasers.length) return;
+    ctx.save();
+    ctx.setLineDash([]);
+    for (const laser of activeLasers) {
+      const alpha = clamp(1 - laser.life / laser.duration, 0, 1);
+      ctx.strokeStyle = COLORS.laserBeam;
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = alpha;
+      for (const seg of laser.segments) {
+        ctx.beginPath();
+        ctx.moveTo(seg.x1, seg.y1);
+        ctx.lineTo(seg.x2, seg.y2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   function render() {
     drawBackground();
     drawObstacles();
+    drawItems();
     drawBullets();
     drawExplosions();
     drawTank(playerTank);
     drawTank(aiTank);
+    drawLaserPreviews();
+    drawActiveLasers();
 
     if (gameState === "gameOver") {
       ctx.fillStyle = "rgba(0,0,0,0.4)";
@@ -2084,6 +2719,8 @@ function getTankForwardVector(tank) {
     const dt = Math.min(rawDt, 0.05); // 防止 tab 切回来时间步太大
 
     if (gameState === "playing" && !isPaused) {
+      matchElapsedTime += dt; // 只在游戏进行时累积时间，供道具刷新和技能持续使用
+
       // 计时制：暂停时也需要静止，这里只在未暂停时扣时间
       if (currentMode === GameMode.TIME) {
         remainingTime -= dt;
@@ -2094,6 +2731,11 @@ function getTankForwardVector(tank) {
         }
       }
 
+      updateTankSkillEffects(playerTank);
+      updateTankSkillEffects(aiTank);
+      processSkillRequests();
+      updateItemSpawns();
+
       // 小局进行中的正常更新：玩家、AI/玩家2、子弹
       updateHumanTank(playerTank, input.player1, "player", dt);
       if (gameMode === "pvp") {
@@ -2103,6 +2745,8 @@ function getTankForwardVector(tank) {
         // PVE：保留 AI 逻辑，方便后续继续调优
         updateAI(dt);
       }
+      handleItemPickup(playerTank);
+      handleItemPickup(aiTank);
       updateBullets(dt);
       updateExplosions(dt);
 
@@ -2133,6 +2777,8 @@ function getTankForwardVector(tank) {
       }
     }
 
+
+    updateActiveLasers(dt);
 
     // 一帧的渲染
     render();
