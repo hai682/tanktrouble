@@ -1218,13 +1218,16 @@ function getTankForwardVector(tank) {
   }
 
   function initAIBrain() {
-    aiBrain.goal = null;
-    aiBrain.goalTimer = 0;
+    aiBrain.currentGoal = { type: "idle", priority: 0, ttl: 0, id: 0, continuous: true };
+    aiBrain.actions = [];
+    aiBrain.goalId = 1;
     aiBrain.planCooldown = 0;
-    aiBrain.strafeDir = Math.random() < 0.5 ? -1 : 1;
-    aiBrain.strafeTimer = 0;
-    aiBrain.lastKnownPlayer = playerTank
+    aiBrain.stuckTimer = 0;
+    aiBrain.memory.lastKnownPlayer = playerTank
       ? { x: playerTank.x, y: playerTank.y }
+      : { x: 0, y: 0 };
+    aiBrain.memory.lastPos = aiTank
+      ? { x: aiTank.x, y: aiTank.y }
       : { x: 0, y: 0 };
   }
 
@@ -1248,33 +1251,93 @@ function getTankForwardVector(tank) {
     }
   }
 
-  function recalcAIPath() {
-    if (!aiTank || !playerTank) return;
-    const startCell = worldToCell(aiTank.x, aiTank.y);
-    const goalCell = worldToCell(playerTank.x, playerTank.y);
-    const path = findPath(startCell, goalCell);
-    aiTank.path = path;
-    aiTank.pathIndex = 0;
-  }
+  // JS 移植版：原 AS 中 checkPathForCollision + checkBulletPath 的抽象版
+  function simulateBulletPath(originX, originY, dirX, dirY, maxTime = CONFIG.bulletLifeTime) {
+    let x = originX;
+    let y = originY;
+    let vx = dirX * CONFIG.bulletSpeed;
+    let vy = dirY * CONFIG.bulletSpeed;
+    let bouncesLeft = CONFIG.bulletMaxBounces;
+    const radius = CONFIG.bulletRadius;
+    const step = 0.05;
+    let time = 0;
+    let closestPlayer = Infinity;
 
-  function followPathDirection() {
-    if (!aiTank.path || aiTank.path.length === 0) return { x: 0, y: 0 };
-    let target = aiTank.path[aiTank.pathIndex];
-    const dx = target.x - aiTank.x;
-    const dy = target.y - aiTank.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < 12 && aiTank.pathIndex < aiTank.path.length - 1) {
-      aiTank.pathIndex++;
-      target = aiTank.path[aiTank.pathIndex];
+    while (time < maxTime) {
+      const dt = Math.min(step, maxTime - time);
+
+      if (vx !== 0) {
+        const prevX = x;
+        x += vx * dt;
+        if (x - radius < 0 || x + radius > CONFIG.canvasWidth) {
+          if (bouncesLeft > 0) {
+            x = clamp(x, radius, CONFIG.canvasWidth - radius);
+            vx *= -1;
+            bouncesLeft--;
+          } else {
+            return { result: "wall", time: time + dt, closest: closestPlayer };
+          }
+        }
+        for (const o of obstacles) {
+          if (circleIntersectsRect(x, y, radius, o)) {
+            if (bouncesLeft > 0) {
+              if (prevX < o.x && vx > 0) x = o.x - radius;
+              else if (prevX > o.x + o.w && vx < 0) x = o.x + o.w + radius;
+              vx *= -1;
+              bouncesLeft--;
+            } else {
+              return { result: "wall", time: time + dt, closest: closestPlayer };
+            }
+          }
+        }
+      }
+
+      if (vy !== 0) {
+        const prevY = y;
+        y += vy * dt;
+        if (y - radius < 0 || y + radius > CONFIG.canvasHeight) {
+          if (bouncesLeft > 0) {
+            y = clamp(y, radius, CONFIG.canvasHeight - radius);
+            vy *= -1;
+            bouncesLeft--;
+          } else {
+            return { result: "wall", time: time + dt, closest: closestPlayer };
+          }
+        }
+        for (const o of obstacles) {
+          if (circleIntersectsRect(x, y, radius, o)) {
+            if (bouncesLeft > 0) {
+              if (prevY < o.y && vy > 0) y = o.y - radius;
+              else if (prevY > o.y + o.h && vy < 0) y = o.y + o.h + radius;
+              vy *= -1;
+              bouncesLeft--;
+            } else {
+              return { result: "wall", time: time + dt, closest: closestPlayer };
+            }
+          }
+        }
+      }
+
+      const distToPlayer = Math.hypot(playerTank.x - x, playerTank.y - y);
+      closestPlayer = Math.min(closestPlayer, distToPlayer);
+
+      const aiDist = Math.hypot(aiTank.x - x, aiTank.y - y);
+      if (aiDist <= aiTank.radius + radius) {
+        return { result: "self", time, closest: closestPlayer };
+      }
+
+      if (distToPlayer <= playerTank.radius + radius) {
+        return { result: "player", time, closest: closestPlayer };
+      }
+
+      time += dt;
     }
-    const dx2 = target.x - aiTank.x;
-    const dy2 = target.y - aiTank.y;
-    const d2 = Math.hypot(dx2, dy2) || 1;
-    return { x: dx2 / d2, y: dy2 / d2 };
+
+    return { result: "nothing", time: maxTime, closest: closestPlayer };
   }
 
-  function evaluateBulletThreat(params) {
-    if (!aiTank) return null;
+  // JS 移植版：原 AS 中 dodgeTrajectories 的核心思路
+  function findBulletDodgeGoal(params) {
     const horizon = params.dodgeHorizon;
     const dangerRadius = params.dodgeRadius + aiTank.radius + CONFIG.bulletRadius;
     let best = null;
@@ -1284,7 +1347,7 @@ function getTankForwardVector(tank) {
       const vx = b.vx;
       const vy = b.vy;
       const speed2 = vx * vx + vy * vy;
-      if (speed2 < 1e-4) continue;
+      if (speed2 < 1e-5) continue;
       const toTankX = aiTank.x - b.x;
       const toTankY = aiTank.y - b.y;
       const t = -((toTankX * vx + toTankY * vy) / speed2);
@@ -1294,121 +1357,265 @@ function getTankForwardVector(tank) {
       const dist = Math.hypot(aiTank.x - closestX, aiTank.y - closestY);
       if (dist > dangerRadius) continue;
 
-      // 墙体挡住子弹则忽略该威胁（不考虑后续反弹，只做一次直线判断）。
       if (!hasLineOfSight(b.x, b.y, aiTank.x, aiTank.y)) continue;
 
       let dirX = aiTank.x - closestX;
       let dirY = aiTank.y - closestY;
-      const len = Math.hypot(dirX, dirY);
-      if (len < 1e-3) {
-        dirX = -vy;
-        dirY = vx;
-      } else {
-        dirX /= len;
-        dirY /= len;
-      }
+      const len = Math.hypot(dirX, dirY) || 1;
+      dirX /= len;
+      dirY /= len;
 
-      if (!best || t < best.t) {
+      const score = (dangerRadius - dist) / dangerRadius + (horizon - t) / horizon;
+      if (!best || score > best.score) {
         best = {
           type: "dodge",
+          priority: 5 + score,
+          ttl: Math.max(0.2, horizon - t),
           dir: { x: dirX, y: dirY },
-          duration: Math.max(0.2, Math.min(horizon - t + 0.2, horizon)),
-          priority: dangerRadius - dist,
-          t,
+          id: aiBrain.goalId++,
+          continuous: false,
         };
       }
     }
+
     return best;
   }
 
-  function chooseAttackDirection(params) {
-    const dx = aiBrain.lastKnownPlayer.x - aiTank.x;
-    const dy = aiBrain.lastKnownPlayer.y - aiTank.y;
+  function buildBackAwayGoal() {
+    if (aiBrain.stuckTimer < 0.8) return null;
+    const forward = getTankForwardVector(aiTank);
+    return {
+      type: "backAway",
+      priority: 2,
+      ttl: 1,
+      dir: { x: -forward.x, y: -forward.y },
+      id: aiBrain.goalId++,
+      continuous: false,
+    };
+  }
+
+  // JS 移植版：原 AS 中 checkBulletPath 的射击评估
+  function findDirectAttackGoal(params) {
+    if (!aiTank || !playerTank) return null;
+    const dx = playerTank.x - aiTank.x;
+    const dy = playerTank.y - aiTank.y;
     const dist = Math.hypot(dx, dy) || 1;
-    const towardX = dx / dist;
-    const towardY = dy / dist;
-
-    const desiredRange = 170 + params.aggression * 90;
-    let dirX = towardX;
-    let dirY = towardY;
-
-    if (dist > desiredRange + 50) {
-      dirX = towardX;
-      dirY = towardY;
-    } else if (dist < desiredRange - 50) {
-      dirX = -towardX;
-      dirY = -towardY;
-    } else {
-      if (aiBrain.strafeTimer <= 0) {
-        aiBrain.strafeTimer = randomRange(
-          params.strafeIntervalMin,
-          params.strafeIntervalMax
-        );
-        aiBrain.strafeDir = Math.random() < 0.5 ? -1 : 1;
-      }
-      const sideX = -towardY * aiBrain.strafeDir;
-      const sideY = towardX * aiBrain.strafeDir;
-      dirX = towardX * 0.45 + sideX * 0.9;
-      dirY = towardY * 0.45 + sideY * 0.9;
-    }
-
-    const len = Math.hypot(dirX, dirY) || 1;
-    return { x: dirX / len, y: dirY / len };
-  }
-
-  function chooseOffensiveGoal(params) {
-    const directSight = hasLineOfSight(
-      aiTank.x,
-      aiTank.y,
-      playerTank.x,
-      playerTank.y
-    );
-
-    if (directSight) {
-      return { type: "attack", priority: 2, planCooldown: params.planInterval };
-    }
-
-    if (aiTank.repathCooldown <= 0) {
-      recalcAIPath();
-      aiTank.repathCooldown = params.planInterval + 0.3;
-    }
-
-    if (aiTank.path && aiTank.path.length > 0) {
-      return { type: "chase", priority: 1, planCooldown: params.planInterval };
-    }
-
-    return { type: "wander", priority: 0.5, planCooldown: params.planInterval };
-  }
-
-  function computeAimInfo(params) {
-    const relX = playerTank.x - aiTank.x;
-    const relY = playerTank.y - aiTank.y;
-    const dist = Math.hypot(relX, relY) || 1;
-    const directDir = { x: relX / dist, y: relY / dist };
-
     const lead = computeLeadDirection(
-      relX,
-      relY,
+      dx,
+      dy,
       playerTank.vx,
       playerTank.vy,
       CONFIG.bulletSpeed
     );
 
-    let dirX = directDir.x;
-    let dirY = directDir.y;
-    if (lead) {
-      dirX = directDir.x * (1 - params.predictionFactor) + lead.x * params.predictionFactor;
-      dirY = directDir.y * (1 - params.predictionFactor) + lead.y * params.predictionFactor;
-      const len = Math.hypot(dirX, dirY) || 1;
-      dirX /= len;
-      dirY /= len;
+    const aimDir = lead
+      ? {
+          x: dx / dist * (1 - params.predictionFactor) + lead.x * params.predictionFactor,
+          y: dy / dist * (1 - params.predictionFactor) + lead.y * params.predictionFactor,
+        }
+      : { x: dx / dist, y: dy / dist };
+    const len = Math.hypot(aimDir.x, aimDir.y) || 1;
+    aimDir.x /= len;
+    aimDir.y /= len;
+
+    const muzzleX = aiTank.x + aimDir.x * (aiTank.radius + CONFIG.bulletRadius + 2);
+    const muzzleY = aiTank.y + aimDir.y * (aiTank.radius + CONFIG.bulletRadius + 2);
+    const sim = simulateBulletPath(muzzleX, muzzleY, aimDir.x, aimDir.y);
+
+    if (sim.result === "self") return null;
+
+    if (sim.result === "player") {
+      return {
+        type: "attack",
+        priority: 3 + params.aggression,
+        ttl: params.planInterval * 2,
+        aimDir,
+        angle: Math.atan2(aimDir.y, aimDir.x),
+        id: aiBrain.goalId++,
+        continuous: false,
+      };
     }
 
-    const hasSight = hasLineOfSight(aiTank.x, aiTank.y, playerTank.x, playerTank.y);
-    return { aimDir: { x: dirX, y: dirY }, hasSight, dist };
+    if (sim.closest < 120) {
+      return {
+        type: "attack",
+        priority: 1.5,
+        ttl: params.planInterval,
+        aimDir,
+        angle: Math.atan2(aimDir.y, aimDir.x),
+        id: aiBrain.goalId++,
+        continuous: false,
+      };
+    }
+
+    return null;
   }
 
-  // ===== 新版 AI 更新（参考原版的“目标 + 躲避”思路） =====
+  function buildChaseGoal(params) {
+    const start = worldToCell(aiTank.x, aiTank.y);
+    const target = worldToCell(playerTank.x, playerTank.y);
+    const path = findPath(start, target);
+    if (!path || path.length === 0) return null;
+
+    const dist = Math.hypot(aiTank.x - playerTank.x, aiTank.y - playerTank.y);
+    const priority = 1 + params.aggression + Math.max(0, 400 - dist) / 400;
+    return {
+      type: "chase",
+      priority,
+      ttl: params.planInterval * 2,
+      path,
+      id: aiBrain.goalId++,
+      continuous: false,
+    };
+  }
+
+  function buildWanderGoal() {
+    const randomCell = {
+      x: Math.floor(Math.random() * navGrid.cols),
+      y: Math.floor(Math.random() * navGrid.rows),
+    };
+    const cs = navGrid.cellSize;
+    const world = {
+      x: randomCell.x * cs + cs / 2,
+      y: randomCell.y * cs + cs / 2,
+    };
+    return {
+      type: "wander",
+      priority: 0.2,
+      ttl: 1.5,
+      target: { x: world.x, y: world.y },
+      id: aiBrain.goalId++,
+      continuous: false,
+    };
+  }
+
+  function aiConsiderGoal(goal) {
+    if (!goal) return;
+    if (
+      !aiBrain.currentGoal ||
+      goal.priority > aiBrain.currentGoal.priority ||
+      (goal.priority === aiBrain.currentGoal.priority && goal.id > aiBrain.currentGoal.id)
+    ) {
+      aiBrain.currentGoal = goal;
+    }
+  }
+
+  // JS 移植版：原 AS 中 decideActionsToAchieveGoal
+  function planActionsForGoal(goal, params) {
+    aiBrain.actions = [];
+    if (!goal) return;
+
+    switch (goal.type) {
+      case "dodge":
+      case "backAway":
+        aiBrain.actions.push({ type: "strafe", dir: goal.dir, duration: goal.ttl });
+        break;
+      case "attack":
+        aiBrain.actions.push({ type: "fire", angle: goal.angle, delay: params.reactionDelay });
+        aiBrain.actions.push({ type: "turnTo", angle: goal.angle });
+        break;
+      case "chase":
+        for (let i = goal.path.length - 1; i >= 0; i--) {
+          const wp = goal.path[i];
+          aiBrain.actions.push({ type: "driveTo", x: wp.x, y: wp.y });
+        }
+        break;
+      case "wander":
+        aiBrain.actions.push({ type: "driveTo", x: goal.target.x, y: goal.target.y });
+        break;
+      default:
+        break;
+    }
+  }
+
+  // JS 移植版：原 AS 中 setInputToDoActions 的执行
+  function executeAIActions(dt, params) {
+    if (aiBrain.actions.length === 0) {
+      return { moveDir: { x: 0, y: 0 }, fire: false, face: null };
+    }
+
+    const action = aiBrain.actions[aiBrain.actions.length - 1];
+    let moveDir = { x: 0, y: 0 };
+    let fire = false;
+    let faceAngle = null;
+
+    switch (action.type) {
+      case "driveTo": {
+        const dx = action.x - aiTank.x;
+        const dy = action.y - aiTank.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < aiTank.radius * 0.8) {
+          aiBrain.actions.pop();
+          return executeAIActions(dt, params);
+        }
+        moveDir = { x: dx / (dist || 1), y: dy / (dist || 1) };
+        faceAngle = Math.atan2(moveDir.y, moveDir.x);
+        break;
+      }
+      case "turnTo": {
+        faceAngle = action.angle;
+        const diff = Math.abs(normalizeAngle(aiTank.angle - action.angle));
+        if (diff < 0.05) {
+          aiBrain.actions.pop();
+          return executeAIActions(dt, params);
+        }
+        break;
+      }
+      case "strafe": {
+        moveDir = action.dir;
+        action.duration -= dt;
+        if (action.duration <= 0) {
+          aiBrain.actions.pop();
+        }
+        break;
+      }
+      case "fire": {
+        faceAngle = action.angle;
+        action.delay -= dt;
+        const diff = Math.abs(normalizeAngle(aiTank.angle - action.angle));
+        if (action.delay <= 0 && diff < 0.25) {
+          fire = true;
+          aiBrain.actions.pop();
+        }
+        break;
+      }
+      default:
+        aiBrain.actions.pop();
+        break;
+    }
+
+    return { moveDir, fire, face: faceAngle };
+  }
+
+  // JS 移植版：原 AS 中 makeDecisionsAndUpdateGoal 的核心逻辑
+  function updateAIGoal(dt, params) {
+    if (aiBrain.currentGoal && !aiBrain.currentGoal.continuous) {
+      aiBrain.currentGoal.ttl -= dt;
+      if (aiBrain.currentGoal.ttl <= 0) {
+        aiBrain.currentGoal = { type: "idle", priority: 0, ttl: 0, id: 0, continuous: true };
+      }
+    }
+
+    if (aiBrain.currentGoal) {
+      aiBrain.currentGoal.priority *= 0.92;
+    }
+
+    const dodgeGoal = findBulletDodgeGoal(params);
+    const backAway = buildBackAwayGoal();
+    const attackGoal = findDirectAttackGoal(params);
+    const chaseGoal = buildChaseGoal(params);
+    const wanderGoal = buildWanderGoal();
+
+    aiConsiderGoal(dodgeGoal);
+    aiConsiderGoal(backAway);
+    aiConsiderGoal(attackGoal);
+    aiConsiderGoal(chaseGoal);
+    aiConsiderGoal(wanderGoal);
+
+    planActionsForGoal(aiBrain.currentGoal, params);
+  }
+
+  // JS 移植版：原 AS 中 setInputToDoActions 之后的控制
   function updateAI(dt) {
     if (!aiTank || !aiTank.isAlive || !playerTank) return;
     const params = DIFFICULTY_PARAMS[currentDifficulty];
@@ -1417,97 +1624,61 @@ function getTankForwardVector(tank) {
       CONFIG.aiSpeedFactor[currentDifficulty];
 
     aiTank.reactionTimer = Math.max(0, aiTank.reactionTimer - dt);
-    aiTank.repathCooldown = Math.max(0, aiTank.repathCooldown - dt);
     aiBrain.planCooldown = Math.max(0, aiBrain.planCooldown - dt);
-    aiBrain.goalTimer = Math.max(0, aiBrain.goalTimer - dt);
-    aiBrain.strafeTimer = Math.max(0, aiBrain.strafeTimer - dt);
-    aiBrain.lastKnownPlayer = { x: playerTank.x, y: playerTank.y };
 
-    // 1）优先检查子弹威胁，随时可以打断当前计划
-    const threat = evaluateBulletThreat(params);
-    if (
-      threat &&
-      (!aiBrain.goal || aiBrain.goal.type !== "dodge" || threat.t < aiBrain.goal.t)
-    ) {
-      aiBrain.goal = threat;
-      aiBrain.goalTimer = threat.duration;
-      aiBrain.planCooldown = params.planInterval;
-    }
+    aiBrain.memory.lastKnownPlayer = { x: playerTank.x, y: playerTank.y };
 
-    // 2）定期评估进攻/追击目标
-    if ((!aiBrain.goal || aiBrain.planCooldown <= 0) && (!aiBrain.goal || aiBrain.goal.type !== "dodge")) {
-      aiBrain.goal = chooseOffensiveGoal(params);
-      aiBrain.goalTimer = aiBrain.goal.planCooldown ?? params.planInterval;
-      aiBrain.planCooldown = aiBrain.goal.planCooldown ?? params.planInterval;
-    }
-
-    // 3）根据当前目标决定移动方向
-    let moveDir = { x: 0, y: 0 };
-    if (aiBrain.goal && aiBrain.goal.type === "dodge") {
-      moveDir = aiBrain.goal.dir;
-      if (aiBrain.goalTimer <= 0) {
-        aiBrain.goal = null;
-      }
-    } else if (aiBrain.goal && aiBrain.goal.type === "attack") {
-      moveDir = chooseAttackDirection(params);
-    } else if (aiBrain.goal && aiBrain.goal.type === "chase") {
-      moveDir = followPathDirection();
+    const moved = Math.hypot(
+      aiTank.x - aiBrain.memory.lastPos.x,
+      aiTank.y - aiBrain.memory.lastPos.y
+    );
+    if (moved < baseSpeed * dt * 0.25) {
+      aiBrain.stuckTimer = Math.min(aiBrain.stuckTimer + dt, 2);
     } else {
-      const dx = aiBrain.lastKnownPlayer.x - aiTank.x;
-      const dy = aiBrain.lastKnownPlayer.y - aiTank.y;
-      const d = Math.hypot(dx, dy) || 1;
-      moveDir = { x: dx / d, y: dy / d };
+      aiBrain.stuckTimer = Math.max(0, aiBrain.stuckTimer - dt * 0.5);
+    }
+    aiBrain.memory.lastPos = { x: aiTank.x, y: aiTank.y };
+
+    if (aiBrain.planCooldown <= 0 || aiBrain.actions.length === 0) {
+      aiBrain.planCooldown = params.planInterval;
+      updateAIGoal(dt, params);
     }
 
-    const aimInfo = computeAimInfo(params);
-    const shouldFaceTarget = aimInfo.hasSight && aiBrain.goal?.type !== "dodge";
-    if (shouldFaceTarget) {
-      moveDir = aimInfo.aimDir;
-    }
+    const intent = executeAIActions(dt, params);
+    const dir = intent.moveDir;
 
-    steerTankTowards(aiTank, moveDir.x, moveDir.y, dt, 1.1);
+    if (intent.face !== null) {
+      steerTankTowards(aiTank, Math.cos(intent.face), Math.sin(intent.face), dt, 1);
+    } else {
+      steerTankTowards(aiTank, dir.x, dir.y, dt, 1);
+    }
 
     const forward = getTankForwardVector(aiTank);
-    aiTank.vx = forward.x * baseSpeed;
-    aiTank.vy = forward.y * baseSpeed;
+    const speed = dir.x === 0 && dir.y === 0 ? 0 : baseSpeed;
+    aiTank.vx = forward.x * speed;
+    aiTank.vy = forward.y * speed;
     moveTankWithCollisions(aiTank, aiTank.vx * dt, aiTank.vy * dt);
 
     aiTank.facingX = forward.x;
     aiTank.facingY = forward.y;
 
-    // 4）射击：确保朝向接近目标再开火
     if (aiTank.shootCooldown > 0) {
       aiTank.shootCooldown -= dt;
     }
 
-    const aimAngle = Math.atan2(aimInfo.aimDir.y, aimInfo.aimDir.x);
-    const angleDiff = Math.abs(normalizeAngle(aimAngle - aiTank.angle));
-    const willingToShoot =
-      aimInfo.hasSight || Math.random() < params.aggression * 0.2;
-
     if (
+      intent.fire &&
       aiTank.shootCooldown <= 0 &&
       aiTank.reactionTimer <= 0 &&
-      willingToShoot &&
-      angleDiff < 0.35 &&
       countBulletsForOwner("ai") < CONFIG.maxBulletsPerTank
     ) {
-      const finalAim = applyAimError(
-        aimInfo.aimDir.x,
-        aimInfo.aimDir.y,
-        params.aimErrorDeg
-      );
-      aiTank.angle = Math.atan2(finalAim.y, finalAim.x);
+      const aimDir = applyAimError(Math.cos(aiTank.angle), Math.sin(aiTank.angle), params.aimErrorDeg);
+      aiTank.angle = Math.atan2(aimDir.y, aimDir.x);
       spawnBulletFromTank(aiTank);
-      aiTank.shootCooldown = randomRange(
-        params.fireIntervalMin,
-        params.fireIntervalMax
-      );
+      aiTank.shootCooldown = randomRange(params.fireIntervalMin, params.fireIntervalMax);
       aiTank.reactionTimer = params.reactionDelay;
     }
   }
-
-
 
   // ===== 击中判定 & 计分 =====
   // ===== 击中判定 & 小局结束入口 =====
